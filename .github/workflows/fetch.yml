@@ -2,11 +2,14 @@ name: Daily DBMF scrape
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # elke dag 07:00 UTC
+    - cron: "0 7 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fetch:
