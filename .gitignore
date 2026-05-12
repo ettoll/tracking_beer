@@ -35,7 +35,9 @@ pip-delete-this-directory.txt
 *.swo
 
 # Data files
-data/
+data/*
+!data/total_data_positions.csv
+!data/total_data_descriptions.csv
 !data/.gitkeep
 
 # OS
