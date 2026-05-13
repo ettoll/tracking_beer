@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DBMF Data Dashboard</title>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
@@ -34,27 +34,8 @@
 
     main {
       padding: 32px 40px;
-      max-width: 1300px;
+      max-width: 1400px;
       margin: auto;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 24px;
-      margin-bottom: 32px;
-    }
-
-    .card {
-      background: white;
-      border-radius: 14px;
-      padding: 22px;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
-    }
-
-    .card h2 {
-      margin-top: 0;
-      font-size: 20px;
     }
 
     .kpi-grid {
@@ -82,6 +63,29 @@
       font-weight: bold;
     }
 
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    }
+
+    .card h2 {
+      margin-top: 0;
+      font-size: 20px;
+    }
+
+    .chart {
+      width: 100%;
+      height: 520px;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -99,8 +103,8 @@
       font-weight: 600;
     }
 
-    .full-width {
-      grid-column: 1 / -1;
+    .table-wrapper {
+      overflow-x: auto;
     }
 
     .error {
@@ -113,7 +117,7 @@
     }
 
     @media (max-width: 900px) {
-      .grid, .kpi-grid {
+      .kpi-grid {
         grid-template-columns: 1fr;
       }
 
@@ -124,6 +128,10 @@
       header {
         padding: 24px 20px;
       }
+
+      .chart {
+        height: 420px;
+      }
     }
   </style>
 </head>
@@ -131,7 +139,7 @@
 <body>
   <header>
     <h1>DBMF Data Dashboard</h1>
-    <p>Automatically loaded from the CSV files in the GitHub repository.</p>
+    <p>Automatically loaded from the CSV files in this GitHub repository.</p>
   </header>
 
   <main>
@@ -158,50 +166,72 @@
 
     <section class="grid">
       <div class="card">
+        <h2>Datum vs SHARES</h2>
+        <div id="sharesByFutureChart" class="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>Datum vs PCT_HOLDINGS</h2>
+        <div id="pctHoldingsByFutureChart" class="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>Datum vs diff amount shares</h2>
+        <div id="sharesDiffChart" class="chart"></div>
+      </div>
+
+      <div class="card">
         <h2>NAV over time</h2>
-        <canvas id="navChart"></canvas>
+        <div id="navChart" class="chart"></div>
       </div>
 
       <div class="card">
         <h2>Total net assets over time</h2>
-        <canvas id="assetsChart"></canvas>
+        <div id="assetsChart" class="chart"></div>
       </div>
 
       <div class="card">
         <h2>Shares outstanding over time</h2>
-        <canvas id="sharesChart"></canvas>
+        <div id="sharesOutstandingChart" class="chart"></div>
       </div>
 
       <div class="card">
         <h2>Total expense ratio over time</h2>
-        <canvas id="expenseChart"></canvas>
+        <div id="expenseRatioChart" class="chart"></div>
       </div>
 
-      <div class="card full-width">
-        <h2>Latest holdings by weight</h2>
-        <canvas id="holdingsChart"></canvas>
-      </div>
-
-      <div class="card full-width">
+      <div class="card">
         <h2>Latest positions table</h2>
-        <div id="positionsTable"></div>
+        <div id="positionsTable" class="table-wrapper"></div>
       </div>
 
-      <div class="card full-width">
+      <div class="card">
         <h2>Description data table</h2>
-        <div id="descriptionsTable"></div>
+        <div id="descriptionsTable" class="table-wrapper"></div>
       </div>
     </section>
   </main>
 
   <script>
-  const DESCRIPTION_CSV = "data/total_data_descriptions.csv";
-  const POSITIONS_CSV = "data/total_data_positions.csv";
-    
+    const DESCRIPTION_CSV = "data/total_data_descriptions.csv";
+    const POSITIONS_CSV = "data/total_data_positions.csv";
+
     function showError(message) {
       const box = document.getElementById("errorBox");
       box.style.display = "block";
       box.textContent = message;
+    }
+
+    function loadCsv(path) {
+      return new Promise((resolve, reject) => {
+        Papa.parse(path, {
+          download: true,
+          header: true,
+          skipEmptyLines: true,
+          complete: results => resolve(results.data),
+          error: error => reject(error)
+        });
+      });
     }
 
     function parseNumber(value) {
@@ -231,7 +261,6 @@
 
     function formatMoney(value) {
       const num = parseNumber(value);
-
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -243,7 +272,6 @@
 
     function formatLargeMoney(value) {
       const num = parseNumber(value);
-
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -256,7 +284,6 @@
 
     function formatNumber(value) {
       const num = parseNumber(value);
-
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US").format(num);
@@ -264,7 +291,6 @@
 
     function formatPercent(value) {
       const num = parseNumber(value);
-
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -274,70 +300,159 @@
       }).format(num);
     }
 
-    function loadCsv(path) {
-      return new Promise((resolve, reject) => {
-        Papa.parse(path, {
-          download: true,
-          header: true,
-          skipEmptyLines: true,
-          complete: results => resolve(results.data),
-          error: error => reject(error)
-        });
+    function cleanDescription(description) {
+      if (!description) return "";
+
+      return String(description)
+        .replace(/[A-Z]{3}\d{2}$/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function cleanPositionsData(positions) {
+      const grouped = new Map();
+
+      positions.forEach(row => {
+        const description = row.DESCRIPTION || "";
+
+        if (description.trim().toUpperCase() === "TOTAL NET ASSETS") {
+          return;
+        }
+
+        const date = String(row.DATE);
+        const descriptionClean = cleanDescription(description);
+        const key = `${date}||${descriptionClean}`;
+
+        const shares = parseNumber(row.SHARES) ?? 0;
+        const baseMv = parseNumber(row.BASE_MV) ?? 0;
+        const pctHoldings = parseNumber(row.PCT_HOLDINGS) ?? 0;
+
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            DATE: date,
+            DATE_FORMATTED: formatDate(date),
+            DESCRIPTION_clean: descriptionClean,
+            SHARES: 0,
+            BASE_MV: 0,
+            PCT_HOLDINGS: 0
+          });
+        }
+
+        const item = grouped.get(key);
+        item.SHARES += shares;
+        item.BASE_MV += baseMv;
+        item.PCT_HOLDINGS += pctHoldings;
+      });
+
+      const data = Array.from(grouped.values()).sort((a, b) => {
+        if (a.DESCRIPTION_clean === b.DESCRIPTION_clean) {
+          return Number(a.DATE) - Number(b.DATE);
+        }
+        return a.DESCRIPTION_clean.localeCompare(b.DESCRIPTION_clean);
+      });
+
+      const previousSharesByDescription = new Map();
+
+      data.forEach(row => {
+        const previous = previousSharesByDescription.get(row.DESCRIPTION_clean);
+
+        if (previous === undefined) {
+          row.SHARES_DIFF = null;
+        } else {
+          row.SHARES_DIFF = row.SHARES - previous;
+        }
+
+        previousSharesByDescription.set(row.DESCRIPTION_clean, row.SHARES);
+      });
+
+      return data;
+    }
+
+    function uniqueDescriptions(data) {
+      return [...new Set(data.map(row => row.DESCRIPTION_clean))]
+        .filter(Boolean)
+        .sort();
+    }
+
+    function makeLineTraces(data, yColumn) {
+      return uniqueDescriptions(data).map(description => {
+        const subset = data.filter(row => row.DESCRIPTION_clean === description);
+
+        return {
+          x: subset.map(row => row.DATE_FORMATTED),
+          y: subset.map(row => row[yColumn]),
+          mode: "lines",
+          type: "scatter",
+          name: description
+        };
       });
     }
 
-    function createLineChart(canvasId, labels, data, label) {
-      new Chart(document.getElementById(canvasId), {
-        type: "line",
-        data: {
-          labels,
-          datasets: [{
-            label,
-            data,
-            tension: 0.25,
-            pointRadius: 3
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: {
-              display: true
-            }
-          },
-          scales: {
-            y: {
-              beginAtZero: false
-            }
-          }
-        }
+    function makeMarkerTraces(data, yColumn) {
+      return uniqueDescriptions(data).map(description => {
+        const subset = data
+          .filter(row => row.DESCRIPTION_clean === description)
+          .filter(row => row[yColumn] !== null)
+          .filter(row => row.SHARES !== 0)
+          .filter(row => row.BASE_MV !== 0)
+          .filter(row => row.PCT_HOLDINGS !== 0);
+
+        return {
+          x: subset.map(row => row.DATE_FORMATTED),
+          y: subset.map(row => row[yColumn]),
+          mode: "markers",
+          type: "scatter",
+          name: description
+        };
       });
     }
 
-    function createBarChart(canvasId, labels, data, label) {
-      new Chart(document.getElementById(canvasId), {
-        type: "bar",
-        data: {
-          labels,
-          datasets: [{
-            label,
-            data
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: {
-              display: true
-            }
-          },
-          scales: {
-            y: {
-              beginAtZero: false
-            }
+    function plotMultiLineChart(elementId, traces, title, yAxisTitle) {
+      Plotly.newPlot(
+        elementId,
+        traces,
+        {
+          title,
+          xaxis: { title: "DATE" },
+          yaxis: { title: yAxisTitle },
+          template: "plotly_white",
+          margin: { l: 60, r: 40, t: 60, b: 60 },
+          legend: {
+            title: { text: "FUTURES" },
+            orientation: "v"
           }
+        },
+        {
+          responsive: true,
+          displaylogo: false
         }
-      });
+      );
+    }
+
+    function plotSimpleLineChart(elementId, rows, yColumn, title, yAxisTitle) {
+      const trace = {
+        x: rows.map(row => formatDate(row.DATE)),
+        y: rows.map(row => parseNumber(row[yColumn])),
+        mode: "lines+markers",
+        type: "scatter",
+        name: yColumn
+      };
+
+      Plotly.newPlot(
+        elementId,
+        [trace],
+        {
+          title,
+          xaxis: { title: "DATE" },
+          yaxis: { title: yAxisTitle },
+          template: "plotly_white",
+          margin: { l: 60, r: 40, t: 60, b: 60 }
+        },
+        {
+          responsive: true,
+          displaylogo: false
+        }
+      );
     }
 
     function makeTable(rows, columns, formatters = {}) {
@@ -383,42 +498,71 @@
           return;
         }
 
-        const latestDescription = descriptions[descriptions.length - 1];
-        const latestDate = latestDescription.DATE;
+        if (!positions.length) {
+          showError("No positions data found.");
+          return;
+        }
 
-        document.getElementById("latestDate").textContent = formatDate(latestDate);
+        const latestDescription = descriptions[descriptions.length - 1];
+
+        document.getElementById("latestDate").textContent = formatDate(latestDescription.DATE);
         document.getElementById("latestNav").textContent = formatMoney(latestDescription.NAV);
         document.getElementById("latestAssets").textContent = formatLargeMoney(latestDescription.TOTAL_NET_ASSETS);
         document.getElementById("latestShares").textContent = formatNumber(latestDescription.SHARES_OUTSTANDING);
 
-        const labels = descriptions.map(row => formatDate(row.DATE));
+        const cleanedPositions = cleanPositionsData(positions);
 
-        createLineChart(
+        plotMultiLineChart(
+          "sharesByFutureChart",
+          makeLineTraces(cleanedPositions, "SHARES"),
+          "Datum vs SHARES",
+          "SHARES"
+        );
+
+        plotMultiLineChart(
+          "pctHoldingsByFutureChart",
+          makeLineTraces(cleanedPositions, "PCT_HOLDINGS"),
+          "Datum vs PCT_HOLDINGS",
+          "PCT_HOLDINGS"
+        );
+
+        plotMultiLineChart(
+          "sharesDiffChart",
+          makeMarkerTraces(cleanedPositions, "SHARES_DIFF"),
+          "Datum vs diff amount shares",
+          "SHARES_DIFF"
+        );
+
+        plotSimpleLineChart(
           "navChart",
-          labels,
-          descriptions.map(row => parseNumber(row.NAV)),
+          descriptions,
+          "NAV",
+          "NAV over time",
           "NAV"
         );
 
-        createLineChart(
+        plotSimpleLineChart(
           "assetsChart",
-          labels,
-          descriptions.map(row => parseNumber(row.TOTAL_NET_ASSETS)),
-          "Total net assets"
+          descriptions,
+          "TOTAL_NET_ASSETS",
+          "Total net assets over time",
+          "TOTAL_NET_ASSETS"
         );
 
-        createLineChart(
-          "sharesChart",
-          labels,
-          descriptions.map(row => parseNumber(row.SHARES_OUTSTANDING)),
-          "Shares outstanding"
+        plotSimpleLineChart(
+          "sharesOutstandingChart",
+          descriptions,
+          "SHARES_OUTSTANDING",
+          "Shares outstanding over time",
+          "SHARES_OUTSTANDING"
         );
 
-        createLineChart(
-          "expenseChart",
-          labels,
-          descriptions.map(row => parseNumber(row.TOTAL_EXPENSE_RATIO)),
-          "Total expense ratio"
+        plotSimpleLineChart(
+          "expenseRatioChart",
+          descriptions,
+          "TOTAL_EXPENSE_RATIO",
+          "Total expense ratio over time",
+          "TOTAL_EXPENSE_RATIO"
         );
 
         const latestPositionsDate = Math.max(
@@ -429,17 +573,8 @@
 
         const latestPositions = positions
           .filter(row => Number(row.DATE) === latestPositionsDate)
-          .filter(row => row.DESCRIPTION !== "TOTAL NET ASSETS")
+          .filter(row => String(row.DESCRIPTION || "").trim().toUpperCase() !== "TOTAL NET ASSETS")
           .sort((a, b) => Math.abs(parseNumber(b.PCT_HOLDINGS) ?? 0) - Math.abs(parseNumber(a.PCT_HOLDINGS) ?? 0));
-
-        const topHoldings = latestPositions.slice(0, 15);
-
-        createBarChart(
-          "holdingsChart",
-          topHoldings.map(row => row.DESCRIPTION),
-          topHoldings.map(row => parseNumber(row.PCT_HOLDINGS)),
-          `Weight on ${formatDate(latestPositionsDate)}`
-        );
 
         document.getElementById("positionsTable").innerHTML = makeTable(
           latestPositions,
@@ -470,7 +605,7 @@
       } catch (error) {
         console.error(error);
         showError(
-          "Could not load the CSV files. If you opened this file directly from your computer, run a local server with: python -m http.server"
+          "Could not load the CSV files. Make sure index.html is in the root of the repo and GitHub Pages is enabled."
         );
       }
     }
