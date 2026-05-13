@@ -25,7 +25,6 @@ from bs4 import BeautifulSoup
 
 URL = "https://www.imgp.com/us/fund/us53700t8273-imgp-dbi-managed-futures-strategy-etf/"
 
-# Repo root = one folder above /tracking
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 
@@ -33,7 +32,6 @@ POSITIONS_PATH = DATA_DIR / "total_data_positions.csv"
 DESCRIPTIONS_PATH = DATA_DIR / "total_data_descriptions.csv"
 
 
-# Final column order used in your existing CSVs
 POSITIONS_COLUMNS = [
     "DATE",
     "CUSIP",
@@ -50,11 +48,14 @@ DESCRIPTIONS_COLUMNS = [
     "SHARES_OUTSTANDING",
     "TOTAL_NET_ASSETS",
     "TOTAL_EXPENSE_RATIO",
+    "LAST_MARKET_PRICE",
+    "CHANGE_IN_LAST_MARKET_PRICE",
+    "PREMIUM_DISCOUNT",
+    "BID_ASK_SPREAD_30_DAY",
 ]
 
 
 def download_html(url: str = URL) -> str:
-    """Download page HTML with browser-like headers."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -80,7 +81,6 @@ def download_html(url: str = URL) -> str:
 
 
 def normalize_col_name(col: object) -> str:
-    """Convert table column names to stable snake-case style names."""
     col = str(col)
     col = re.sub(r"\s+", " ", col).strip().lower()
     col = col.replace("%", " pct ")
@@ -97,10 +97,6 @@ def clean_text(value: object) -> Optional[str]:
 
 
 def clean_number(value: object) -> Optional[float]:
-    """
-    Convert values like '$1,234.50', '(123.4)', '3.1B', '2.4M', '0.85%'
-    into floats. Percent conversion itself is handled in clean_percent.
-    """
     if pd.isna(value):
         return None
 
@@ -136,10 +132,6 @@ def clean_number(value: object) -> Optional[float]:
 
 
 def clean_percent(value: object) -> Optional[float]:
-    """
-    Convert '53%' to 0.53.
-    If the website already returns 0.53, keep it as 0.53.
-    """
     if pd.isna(value):
         return None
 
@@ -151,7 +143,6 @@ def clean_percent(value: object) -> Optional[float]:
     if "%" in raw:
         return number / 100.0
 
-    # Safety: if a value looks like 53 rather than 0.53, convert to 0.53.
     if abs(number) > 5:
         return number / 100.0
 
@@ -159,13 +150,11 @@ def clean_percent(value: object) -> Optional[float]:
 
 
 def parse_date(value: object) -> Optional[int]:
-    """Return date as YYYYMMDD integer."""
     if pd.isna(value):
         return None
 
     text = str(value).strip()
 
-    # Already like 20260306
     if re.fullmatch(r"\d{8}", text):
         return int(text)
 
@@ -176,8 +165,28 @@ def parse_date(value: object) -> Optional[int]:
     return int(dt.strftime("%Y%m%d"))
 
 
+def extract_date_from_text(text: object) -> Optional[int]:
+    if text is None:
+        return None
+
+    text = str(text)
+    patterns = [
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+        r"(\d{4}-\d{2}-\d{2})",
+        r"([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            parsed = parse_date(match.group(1))
+            if parsed:
+                return parsed
+
+    return None
+
+
 def find_as_of_date(html: str) -> Optional[int]:
-    """Find a page-level 'as of' date if the holdings table itself has no date column."""
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True)
 
@@ -201,7 +210,6 @@ def find_as_of_date(html: str) -> Optional[int]:
 
 
 def first_matching_column(columns: list[str], patterns: list[str]) -> Optional[str]:
-    """Return first column that matches any regex pattern."""
     for pattern in patterns:
         for col in columns:
             if re.search(pattern, col, flags=re.IGNORECASE):
@@ -210,7 +218,6 @@ def first_matching_column(columns: list[str], patterns: list[str]) -> Optional[s
 
 
 def read_html_tables(html: str) -> list[pd.DataFrame]:
-    """Read all HTML tables and normalize their column names."""
     tables = pd.read_html(StringIO(html))
     normalized_tables = []
 
@@ -223,7 +230,6 @@ def read_html_tables(html: str) -> list[pd.DataFrame]:
 
 
 def parse_positions(html: str) -> pd.DataFrame:
-    """Extract the holdings/positions table."""
     tables = read_html_tables(html)
     as_of_date = find_as_of_date(html)
 
@@ -277,6 +283,7 @@ def parse_positions(html: str) -> pd.DataFrame:
         )
 
     result = pd.DataFrame()
+
     if col_date is not None:
         result["DATE"] = table[col_date].apply(parse_date)
     else:
@@ -292,17 +299,104 @@ def parse_positions(html: str) -> pd.DataFrame:
     result["PCT_HOLDINGS"] = table[col_pct].apply(clean_percent)
 
     result = result[POSITIONS_COLUMNS]
+
+    summary_row_mask = (
+        result["DESCRIPTION"].fillna("").str.strip().str.upper().eq("TOTAL NET ASSETS")
+        | (
+            result["CUSIP"].fillna("").str.strip().eq("-")
+            & result["TICKER"].fillna("").str.strip().eq("-")
+            & result["SHARES"].isna()
+            & result["PCT_HOLDINGS"].isna()
+        )
+    )
+
+    result = result.loc[~summary_row_mask].copy()
     result = result.dropna(subset=["DATE", "CUSIP", "DESCRIPTION"])
     result["DATE"] = result["DATE"].astype(int)
 
     return result
 
 
+def normalize_label(label: object) -> str:
+    label = clean_text(label) or ""
+    label = re.sub(r"\([^)]*\)", "", label)
+    label = label.replace("&", "and")
+    label = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
+    return label
+
+
+def parse_top_metric_cards(soup: BeautifulSoup) -> tuple[dict[str, float], Optional[int]]:
+    values: dict[str, float] = {}
+    dates: list[int] = []
+
+    for col in soup.select("div.col.us"):
+        label_node = col.select_one("label.label")
+        value_node = col.select_one("p.row-content")
+
+        if not label_node or not value_node:
+            continue
+
+        label = normalize_label(label_node.get_text(" ", strip=True))
+        raw_value = value_node.get_text(" ", strip=True)
+
+        if label == "total_asset_value":
+            values["NAV"] = clean_number(raw_value)
+        elif label == "total_expense_ratio":
+            values["TOTAL_EXPENSE_RATIO"] = clean_percent(raw_value)
+
+        date_node = col.select_one("p.as-date")
+        parsed_date = extract_date_from_text(
+            date_node.get_text(" ", strip=True) if date_node else None
+        )
+
+        if parsed_date:
+            dates.append(parsed_date)
+
+    return values, dates[0] if dates else None
+
+
+def parse_fund_data_pricing_items(soup: BeautifulSoup) -> tuple[dict[str, float], Optional[int]]:
+    values: dict[str, float] = {}
+    dates: list[int] = []
+
+    label_to_column = {
+        "net_assets_of_the_fund": "TOTAL_NET_ASSETS",
+        "shares_outstanding": "SHARES_OUTSTANDING",
+        "last_market_price": "LAST_MARKET_PRICE",
+        "change_in_last_market_price": "CHANGE_IN_LAST_MARKET_PRICE",
+        "premium_discount": "PREMIUM_DISCOUNT",
+        "30_day_median_bid_ask_spread": "BID_ASK_SPREAD_30_DAY",
+    }
+
+    for item in soup.select("p.item"):
+        description_node = item.select_one("span.description")
+        content_node = item.select_one("span.content")
+
+        if not description_node or not content_node:
+            continue
+
+        description_text = description_node.get_text(" ", strip=True)
+        content_text = content_node.get_text(" ", strip=True)
+
+        parsed_date = extract_date_from_text(description_text)
+        if parsed_date:
+            dates.append(parsed_date)
+
+        label = normalize_label(description_text)
+        column = label_to_column.get(label)
+
+        if column is None:
+            continue
+
+        if column == "BID_ASK_SPREAD_30_DAY":
+            values[column] = clean_percent(content_text)
+        else:
+            values[column] = clean_number(content_text)
+
+    return values, dates[0] if dates else None
+
+
 def extract_label_value_from_text(text: str, labels: list[str]) -> Optional[float]:
-    """
-    Search page text for a numeric value after one of the labels.
-    Example: 'NAV $30.25' or 'Total Net Assets $3.1B'.
-    """
     for label in labels:
         pattern = rf"{label}\s*[:\-]?\s*(\$?\(?-?[\d,]+(?:\.\d+)?\)?\s*[%KMBkmb]?)"
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -313,54 +407,73 @@ def extract_label_value_from_text(text: str, labels: list[str]) -> Optional[floa
 
 
 def parse_descriptions(html: str) -> pd.DataFrame:
-    """Extract fund-level data such as NAV, shares outstanding and total net assets."""
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True)
-    as_of_date = find_as_of_date(html)
+
+    top_values, top_date = parse_top_metric_cards(soup)
+    pricing_values, pricing_date = parse_fund_data_pricing_items(soup)
+
+    as_of_date = pricing_date or top_date or find_as_of_date(html)
 
     if as_of_date is None:
         raise RuntimeError("Could not find a DATE/as-of date for the fund description data.")
 
-    nav = extract_label_value_from_text(text, [
-        r"NAV",
-        r"Net\s+Asset\s+Value",
-    ])
+    row = {column: pd.NA for column in DESCRIPTIONS_COLUMNS}
+    row["DATE"] = as_of_date
 
-    shares_outstanding = extract_label_value_from_text(text, [
-        r"Shares\s+Outstanding",
-    ])
+    row.update(top_values)
+    row.update(pricing_values)
 
-    total_net_assets = extract_label_value_from_text(text, [
-        r"Total\s+Net\s+Assets",
-        r"Net\s+Assets",
-    ])
+    if pd.isna(row["NAV"]):
+        row["NAV"] = extract_label_value_from_text(
+            text,
+            [
+                r"TOTAL\s+ASSET\s+VALUE",
+                r"NAV",
+                r"Net\s+Asset\s+Value",
+            ],
+        )
 
-    expense_ratio = extract_label_value_from_text(text, [
-        r"Total\s+Expense\s+Ratio",
-        r"Gross\s+Expense\s+Ratio",
-        r"Expense\s+Ratio",
-    ])
+    if pd.isna(row["SHARES_OUTSTANDING"]):
+        row["SHARES_OUTSTANDING"] = extract_label_value_from_text(
+            text,
+            [
+                r"Shares\s+Outstanding",
+            ],
+        )
 
-    # Expense ratio appears as 0.85% on many fund pages; store as 0.0085.
-    if expense_ratio is not None and expense_ratio > 0.05:
-        # If parsed from '0.85%' clean_number returns 0.85.
-        expense_ratio = expense_ratio / 100.0
+    if pd.isna(row["TOTAL_NET_ASSETS"]):
+        row["TOTAL_NET_ASSETS"] = extract_label_value_from_text(
+            text,
+            [
+                r"Net\s+Assets\s+of\s+the\s+Fund",
+                r"Total\s+Net\s+Assets",
+                r"Net\s+Assets",
+            ],
+        )
 
-    row = {
-        "DATE": as_of_date,
-        "NAV": nav,
-        "SHARES_OUTSTANDING": shares_outstanding,
-        "TOTAL_NET_ASSETS": total_net_assets,
-        "TOTAL_EXPENSE_RATIO": expense_ratio,
-    }
+    if pd.isna(row["TOTAL_EXPENSE_RATIO"]):
+        expense_ratio = extract_label_value_from_text(
+            text,
+            [
+                r"Total\s+Expense\s+Ratio",
+                r"Gross\s+Expense\s+Ratio",
+                r"Expense\s+Ratio",
+            ],
+        )
+
+        if expense_ratio is not None and expense_ratio > 0.05:
+            expense_ratio = expense_ratio / 100.0
+
+        row["TOTAL_EXPENSE_RATIO"] = expense_ratio
 
     result = pd.DataFrame([row], columns=DESCRIPTIONS_COLUMNS)
 
-    # If the page did not expose all values, still save the date and whatever was found.
-    # But require at least one real fund-level metric besides DATE.
-    if result[["NAV", "SHARES_OUTSTANDING", "TOTAL_NET_ASSETS", "TOTAL_EXPENSE_RATIO"]].isna().all(axis=None):
+    metric_columns = [column for column in DESCRIPTIONS_COLUMNS if column != "DATE"]
+
+    if result[metric_columns].isna().all(axis=None):
         raise RuntimeError(
-            "Could not extract NAV / shares outstanding / net assets / expense ratio. "
+            "Could not extract any fund-level metrics for total_data_descriptions.csv. "
             "The website structure may have changed."
         )
 
@@ -373,7 +486,6 @@ def append_without_duplicates(
     columns: list[str],
     subset: list[str],
 ) -> pd.DataFrame:
-    """Append new_data to existing CSV and remove duplicates."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists():
@@ -415,6 +527,7 @@ def main() -> None:
     )
 
     latest_date = new_positions["DATE"].iloc[0]
+
     print(f"Scraped DBMF data for {latest_date}")
     print(f"New position rows scraped: {len(new_positions)}")
     print(f"Total position rows stored: {len(positions)}")
