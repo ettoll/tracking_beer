@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <title>DBMF Data Dashboard</title>
 
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
@@ -34,7 +35,7 @@
 
     main {
       padding: 32px 40px;
-      max-width: 1400px;
+      max-width: 1450px;
       margin: auto;
     }
 
@@ -83,7 +84,7 @@
 
     .chart {
       width: 100%;
-      height: 520px;
+      height: 540px;
     }
 
     table {
@@ -96,6 +97,7 @@
       padding: 10px 12px;
       border-bottom: 1px solid #e5e7eb;
       text-align: left;
+      white-space: nowrap;
     }
 
     th {
@@ -114,6 +116,13 @@
       border-radius: 10px;
       margin-bottom: 20px;
       display: none;
+    }
+
+    .note {
+      color: #6b7280;
+      font-size: 14px;
+      margin-top: -8px;
+      margin-bottom: 18px;
     }
 
     @media (max-width: 900px) {
@@ -150,14 +159,17 @@
         <div class="kpi-label">Latest Date</div>
         <div class="kpi-value" id="latestDate">-</div>
       </div>
+
       <div class="kpi">
         <div class="kpi-label">NAV</div>
         <div class="kpi-value" id="latestNav">-</div>
       </div>
+
       <div class="kpi">
         <div class="kpi-label">Total Net Assets</div>
         <div class="kpi-value" id="latestAssets">-</div>
       </div>
+
       <div class="kpi">
         <div class="kpi-label">Shares Outstanding</div>
         <div class="kpi-value" id="latestShares">-</div>
@@ -166,17 +178,20 @@
 
     <section class="grid">
       <div class="card">
-        <h2>Datum vs SHARES</h2>
+        <h2>Date vs SHARES</h2>
+        <p class="note">Futures expiries are removed and positions are aggregated by date and underlying future.</p>
         <div id="sharesByFutureChart" class="chart"></div>
       </div>
 
       <div class="card">
-        <h2>Datum vs PCT_HOLDINGS</h2>
+        <h2>Date vs PCT_HOLDINGS</h2>
+        <p class="note">Weights are aggregated after removing futures expiries.</p>
         <div id="pctHoldingsByFutureChart" class="chart"></div>
       </div>
 
       <div class="card">
-        <h2>Datum vs diff amount shares</h2>
+        <h2>Date vs diff amount shares</h2>
+        <p class="note">Difference in shares compared with the previous available date per aggregated future.</p>
         <div id="sharesDiffChart" class="chart"></div>
       </div>
 
@@ -201,7 +216,12 @@
       </div>
 
       <div class="card">
-        <h2>Latest positions table</h2>
+        <h2>Latest aggregated positions table</h2>
+        <div id="aggregatedPositionsTable" class="table-wrapper"></div>
+      </div>
+
+      <div class="card">
+        <h2>Latest raw positions table</h2>
         <div id="positionsTable" class="table-wrapper"></div>
       </div>
 
@@ -235,7 +255,13 @@
     }
 
     function parseNumber(value) {
-      if (value === null || value === undefined || value === "" || value === "-") {
+      if (
+        value === null ||
+        value === undefined ||
+        value === "" ||
+        value === "-" ||
+        value === "—"
+      ) {
         return null;
       }
 
@@ -261,6 +287,7 @@
 
     function formatMoney(value) {
       const num = parseNumber(value);
+
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -272,6 +299,7 @@
 
     function formatLargeMoney(value) {
       const num = parseNumber(value);
+
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -284,6 +312,7 @@
 
     function formatNumber(value) {
       const num = parseNumber(value);
+
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US").format(num);
@@ -291,6 +320,7 @@
 
     function formatPercent(value) {
       const num = parseNumber(value);
+
       if (num === null) return "-";
 
       return new Intl.NumberFormat("en-US", {
@@ -300,13 +330,37 @@
       }).format(num);
     }
 
+    function formatPctHoldings(value) {
+      const num = parseNumber(value);
+
+      if (num === null) return "-";
+
+      return `${num.toFixed(2)}%`;
+    }
+
     function cleanDescription(description) {
       if (!description) return "";
 
-      return String(description)
-        .replace(/[A-Z]{3}\d{2}$/g, "")
+      let text = String(description)
         .replace(/\s+/g, " ")
         .trim();
+
+      /*
+        Remove futures expiries, for example:
+        - "US 2YR NOTE (CBT) JUN26" -> "US 2YR NOTE (CBT)"
+        - "US 10YR NOTE (CBT)JUN26" -> "US 10YR NOTE (CBT)"
+        - "WTI CRUDEFUTURE JUL26" -> "WTI CRUDEFUTURE"
+        - "MSCI EAFEJUN26" -> "MSCI EAFE"
+        - "TUM6" style expiry endings if they appear in descriptions
+      */
+
+      text = text.replace(/\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\d{2}$/i, "");
+      text = text.replace(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\d{2}$/i, "");
+      text = text.replace(/\s+[FGHJKMNQUVXZ]\d{1}$/i, "");
+
+      text = text.replace(/\s+/g, " ").trim();
+
+      return text;
     }
 
     function cleanPositionsData(positions) {
@@ -321,6 +375,11 @@
 
         const date = String(row.DATE);
         const descriptionClean = cleanDescription(description);
+
+        if (!date || !descriptionClean) {
+          return;
+        }
+
         const key = `${date}||${descriptionClean}`;
 
         const shares = parseNumber(row.SHARES) ?? 0;
@@ -339,6 +398,7 @@
         }
 
         const item = grouped.get(key);
+
         item.SHARES += shares;
         item.BASE_MV += baseMv;
         item.PCT_HOLDINGS += pctHoldings;
@@ -348,6 +408,7 @@
         if (a.DESCRIPTION_clean === b.DESCRIPTION_clean) {
           return Number(a.DATE) - Number(b.DATE);
         }
+
         return a.DESCRIPTION_clean.localeCompare(b.DESCRIPTION_clean);
       });
 
@@ -393,9 +454,7 @@
         const subset = data
           .filter(row => row.DESCRIPTION_clean === description)
           .filter(row => row[yColumn] !== null)
-          .filter(row => row.SHARES !== 0)
-          .filter(row => row.BASE_MV !== 0)
-          .filter(row => row.PCT_HOLDINGS !== 0);
+          .filter(row => Number.isFinite(row[yColumn]));
 
         return {
           x: subset.map(row => row.DATE_FORMATTED),
@@ -412,13 +471,27 @@
         elementId,
         traces,
         {
-          title,
-          xaxis: { title: "DATE" },
-          yaxis: { title: yAxisTitle },
+          title: title,
+          xaxis: {
+            title: "DATE",
+            type: "date",
+            tickformat: "%Y-%m-%d"
+          },
+          yaxis: {
+            title: yAxisTitle,
+            zeroline: true
+          },
           template: "plotly_white",
-          margin: { l: 60, r: 40, t: 60, b: 60 },
+          margin: {
+            l: 70,
+            r: 40,
+            t: 60,
+            b: 70
+          },
           legend: {
-            title: { text: "FUTURES" },
+            title: {
+              text: "FUTURES"
+            },
             orientation: "v"
           }
         },
@@ -430,9 +503,11 @@
     }
 
     function plotSimpleLineChart(elementId, rows, yColumn, title, yAxisTitle) {
+      const filteredRows = rows.filter(row => parseNumber(row[yColumn]) !== null);
+
       const trace = {
-        x: rows.map(row => formatDate(row.DATE)),
-        y: rows.map(row => parseNumber(row[yColumn])),
+        x: filteredRows.map(row => formatDate(row.DATE)),
+        y: filteredRows.map(row => parseNumber(row[yColumn])),
         mode: "lines+markers",
         type: "scatter",
         name: yColumn
@@ -442,11 +517,22 @@
         elementId,
         [trace],
         {
-          title,
-          xaxis: { title: "DATE" },
-          yaxis: { title: yAxisTitle },
+          title: title,
+          xaxis: {
+            title: "DATE",
+            type: "date",
+            tickformat: "%Y-%m-%d"
+          },
+          yaxis: {
+            title: yAxisTitle
+          },
           template: "plotly_white",
-          margin: { l: 60, r: 40, t: 60, b: 60 }
+          margin: {
+            l: 70,
+            r: 40,
+            t: 60,
+            b: 70
+          }
         },
         {
           responsive: true,
@@ -505,31 +591,38 @@
 
         const latestDescription = descriptions[descriptions.length - 1];
 
-        document.getElementById("latestDate").textContent = formatDate(latestDescription.DATE);
-        document.getElementById("latestNav").textContent = formatMoney(latestDescription.NAV);
-        document.getElementById("latestAssets").textContent = formatLargeMoney(latestDescription.TOTAL_NET_ASSETS);
-        document.getElementById("latestShares").textContent = formatNumber(latestDescription.SHARES_OUTSTANDING);
+        document.getElementById("latestDate").textContent =
+          formatDate(latestDescription.DATE);
+
+        document.getElementById("latestNav").textContent =
+          formatMoney(latestDescription.NAV);
+
+        document.getElementById("latestAssets").textContent =
+          formatLargeMoney(latestDescription.TOTAL_NET_ASSETS);
+
+        document.getElementById("latestShares").textContent =
+          formatNumber(latestDescription.SHARES_OUTSTANDING);
 
         const cleanedPositions = cleanPositionsData(positions);
 
         plotMultiLineChart(
           "sharesByFutureChart",
           makeLineTraces(cleanedPositions, "SHARES"),
-          "Datum vs SHARES",
+          "Date vs SHARES",
           "SHARES"
         );
 
         plotMultiLineChart(
           "pctHoldingsByFutureChart",
           makeLineTraces(cleanedPositions, "PCT_HOLDINGS"),
-          "Datum vs PCT_HOLDINGS",
+          "Date vs PCT_HOLDINGS",
           "PCT_HOLDINGS"
         );
 
         plotMultiLineChart(
           "sharesDiffChart",
           makeMarkerTraces(cleanedPositions, "SHARES_DIFF"),
-          "Datum vs diff amount shares",
+          "Date vs diff amount shares",
           "SHARES_DIFF"
         );
 
@@ -571,28 +664,62 @@
             .filter(value => Number.isFinite(value))
         );
 
-        const latestPositions = positions
+        const latestRawPositions = positions
           .filter(row => Number(row.DATE) === latestPositionsDate)
           .filter(row => String(row.DESCRIPTION || "").trim().toUpperCase() !== "TOTAL NET ASSETS")
           .sort((a, b) => Math.abs(parseNumber(b.PCT_HOLDINGS) ?? 0) - Math.abs(parseNumber(a.PCT_HOLDINGS) ?? 0));
 
-        document.getElementById("positionsTable").innerHTML = makeTable(
-          latestPositions,
-          ["DATE", "CUSIP", "TICKER", "DESCRIPTION", "SHARES", "BASE_MV", "PCT_HOLDINGS"],
+        const latestAggregatedPositions = cleanedPositions
+          .filter(row => Number(row.DATE) === latestPositionsDate)
+          .sort((a, b) => Math.abs(b.PCT_HOLDINGS ?? 0) - Math.abs(a.PCT_HOLDINGS ?? 0));
+
+        document.getElementById("aggregatedPositionsTable").innerHTML = makeTable(
+          latestAggregatedPositions,
+          [
+            "DATE",
+            "DESCRIPTION_clean",
+            "SHARES",
+            "BASE_MV",
+            "PCT_HOLDINGS",
+            "SHARES_DIFF"
+          ],
           {
             DATE: formatDate,
             SHARES: formatNumber,
             BASE_MV: formatMoney,
-            PCT_HOLDINGS: value => {
-              const num = parseNumber(value);
-              return num === null ? "-" : `${num.toFixed(2)}%`;
-            }
+            PCT_HOLDINGS: formatPctHoldings,
+            SHARES_DIFF: formatNumber
+          }
+        );
+
+        document.getElementById("positionsTable").innerHTML = makeTable(
+          latestRawPositions,
+          [
+            "DATE",
+            "CUSIP",
+            "TICKER",
+            "DESCRIPTION",
+            "SHARES",
+            "BASE_MV",
+            "PCT_HOLDINGS"
+          ],
+          {
+            DATE: formatDate,
+            SHARES: formatNumber,
+            BASE_MV: formatMoney,
+            PCT_HOLDINGS: formatPctHoldings
           }
         );
 
         document.getElementById("descriptionsTable").innerHTML = makeTable(
           descriptions.slice().reverse(),
-          ["DATE", "NAV", "SHARES_OUTSTANDING", "TOTAL_NET_ASSETS", "TOTAL_EXPENSE_RATIO"],
+          [
+            "DATE",
+            "NAV",
+            "SHARES_OUTSTANDING",
+            "TOTAL_NET_ASSETS",
+            "TOTAL_EXPENSE_RATIO"
+          ],
           {
             DATE: formatDate,
             NAV: formatMoney,
@@ -605,7 +732,7 @@
       } catch (error) {
         console.error(error);
         showError(
-          "Could not load the CSV files. Make sure index.html is in the root of the repo and GitHub Pages is enabled."
+          "Could not load the CSV files. Make sure index.html is in the root of the repo, the data folder exists, and GitHub Pages is enabled."
         );
       }
     }
