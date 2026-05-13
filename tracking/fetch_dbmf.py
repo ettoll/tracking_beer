@@ -358,10 +358,6 @@ def parse_fund_data_pricing_items(soup: BeautifulSoup) -> tuple[dict[str, float]
     label_to_column = {
         "net_assets_of_the_fund": "TOTAL_NET_ASSETS",
         "shares_outstanding": "SHARES_OUTSTANDING",
-        "last_market_price": "LAST_MARKET_PRICE",
-        "change_in_last_market_price": "CHANGE_IN_LAST_MARKET_PRICE",
-        "premium_discount": "PREMIUM_DISCOUNT",
-        "30_day_median_bid_ask_spread": "BID_ASK_SPREAD_30_DAY",
     }
 
     for item in soup.select("p.item"):
@@ -384,10 +380,7 @@ def parse_fund_data_pricing_items(soup: BeautifulSoup) -> tuple[dict[str, float]
         if column is None:
             continue
 
-        if column == "BID_ASK_SPREAD_30_DAY":
-            values[column] = clean_percent(content_text)
-        else:
-            values[column] = clean_number(content_text)
+        values[column] = clean_number(content_text)
 
     return values, dates[0] if dates else None
 
