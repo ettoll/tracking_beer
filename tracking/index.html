@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DBMF Data Dashboard</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f7f7f7;
+      color: #222;
+    }
+
+    header {
+      background: #111827;
+      color: white;
+      padding: 28px 40px;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 28px;
+    }
+
+    header p {
+      margin: 8px 0 0;
+      color: #d1d5db;
+    }
+
+    main {
+      padding: 32px 40px;
+      max-width: 1300px;
+      margin: auto;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    }
+
+    .card h2 {
+      margin-top: 0;
+      font-size: 20px;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 32px;
+    }
+
+    .kpi {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    }
+
+    .kpi-label {
+      color: #6b7280;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .kpi-value {
+      font-size: 22px;
+      font-weight: bold;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+    }
+
+    th {
+      background: #f3f4f6;
+      font-weight: 600;
+    }
+
+    .full-width {
+      grid-column: 1 / -1;
+    }
+
+    .error {
+      background: #fee2e2;
+      color: #991b1b;
+      padding: 16px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    @media (max-width: 900px) {
+      .grid, .kpi-grid {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 20px;
+      }
+
+      header {
+        padding: 24px 20px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>DBMF Data Dashboard</h1>
+    <p>Automatically loaded from the CSV files in the GitHub repository.</p>
+  </header>
+
+  <main>
+    <div id="errorBox" class="error"></div>
+
+    <section class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Latest Date</div>
+        <div class="kpi-value" id="latestDate">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">NAV</div>
+        <div class="kpi-value" id="latestNav">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Total Net Assets</div>
+        <div class="kpi-value" id="latestAssets">-</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Shares Outstanding</div>
+        <div class="kpi-value" id="latestShares">-</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>NAV over time</h2>
+        <canvas id="navChart"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>Total net assets over time</h2>
+        <canvas id="assetsChart"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>Shares outstanding over time</h2>
+        <canvas id="sharesChart"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>Total expense ratio over time</h2>
+        <canvas id="expenseChart"></canvas>
+      </div>
+
+      <div class="card full-width">
+        <h2>Latest holdings by weight</h2>
+        <canvas id="holdingsChart"></canvas>
+      </div>
+
+      <div class="card full-width">
+        <h2>Latest positions table</h2>
+        <div id="positionsTable"></div>
+      </div>
+
+      <div class="card full-width">
+        <h2>Description data table</h2>
+        <div id="descriptionsTable"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const DESCRIPTION_CSV = "data/total_data_descriptions.csv";
+    const POSITIONS_CSV = "data/total_data_positions.csv";
+
+    function showError(message) {
+      const box = document.getElementById("errorBox");
+      box.style.display = "block";
+      box.textContent = message;
+    }
+
+    function parseNumber(value) {
+      if (value === null || value === undefined || value === "" || value === "-") {
+        return null;
+      }
+
+      const cleaned = String(value)
+        .replaceAll(",", "")
+        .replaceAll("$", "")
+        .replaceAll("%", "")
+        .trim();
+
+      const num = Number(cleaned);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function formatDate(dateValue) {
+      const text = String(dateValue);
+
+      if (text.length === 8) {
+        return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+      }
+
+      return text;
+    }
+
+    function formatMoney(value) {
+      const num = parseNumber(value);
+
+      if (num === null) return "-";
+
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 2
+      }).format(num);
+    }
+
+    function formatLargeMoney(value) {
+      const num = parseNumber(value);
+
+      if (num === null) return "-";
+
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        notation: "compact",
+        maximumFractionDigits: 2
+      }).format(num);
+    }
+
+    function formatNumber(value) {
+      const num = parseNumber(value);
+
+      if (num === null) return "-";
+
+      return new Intl.NumberFormat("en-US").format(num);
+    }
+
+    function formatPercent(value) {
+      const num = parseNumber(value);
+
+      if (num === null) return "-";
+
+      return new Intl.NumberFormat("en-US", {
+        style: "percent",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(num);
+    }
+
+    function loadCsv(path) {
+      return new Promise((resolve, reject) => {
+        Papa.parse(path, {
+          download: true,
+          header: true,
+          skipEmptyLines: true,
+          complete: results => resolve(results.data),
+          error: error => reject(error)
+        });
+      });
+    }
+
+    function createLineChart(canvasId, labels, data, label) {
+      new Chart(document.getElementById(canvasId), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data,
+            tension: 0.25,
+            pointRadius: 3
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              display: true
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: false
+            }
+          }
+        }
+      });
+    }
+
+    function createBarChart(canvasId, labels, data, label) {
+      new Chart(document.getElementById(canvasId), {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              display: true
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: false
+            }
+          }
+        }
+      });
+    }
+
+    function makeTable(rows, columns, formatters = {}) {
+      if (!rows.length) {
+        return "<p>No data available.</p>";
+      }
+
+      const thead = `
+        <thead>
+          <tr>
+            ${columns.map(col => `<th>${col}</th>`).join("")}
+          </tr>
+        </thead>
+      `;
+
+      const tbody = `
+        <tbody>
+          ${rows.map(row => `
+            <tr>
+              ${columns.map(col => {
+                const formatter = formatters[col];
+                const value = formatter ? formatter(row[col]) : row[col];
+                return `<td>${value ?? "-"}</td>`;
+              }).join("")}
+            </tr>
+          `).join("")}
+        </tbody>
+      `;
+
+      return `<table>${thead}${tbody}</table>`;
+    }
+
+    async function main() {
+      try {
+        const descriptions = await loadCsv(DESCRIPTION_CSV);
+        const positions = await loadCsv(POSITIONS_CSV);
+
+        descriptions.sort((a, b) => Number(a.DATE) - Number(b.DATE));
+        positions.sort((a, b) => Number(a.DATE) - Number(b.DATE));
+
+        if (!descriptions.length) {
+          showError("No description data found.");
+          return;
+        }
+
+        const latestDescription = descriptions[descriptions.length - 1];
+        const latestDate = latestDescription.DATE;
+
+        document.getElementById("latestDate").textContent = formatDate(latestDate);
+        document.getElementById("latestNav").textContent = formatMoney(latestDescription.NAV);
+        document.getElementById("latestAssets").textContent = formatLargeMoney(latestDescription.TOTAL_NET_ASSETS);
+        document.getElementById("latestShares").textContent = formatNumber(latestDescription.SHARES_OUTSTANDING);
+
+        const labels = descriptions.map(row => formatDate(row.DATE));
+
+        createLineChart(
+          "navChart",
+          labels,
+          descriptions.map(row => parseNumber(row.NAV)),
+          "NAV"
+        );
+
+        createLineChart(
+          "assetsChart",
+          labels,
+          descriptions.map(row => parseNumber(row.TOTAL_NET_ASSETS)),
+          "Total net assets"
+        );
+
+        createLineChart(
+          "sharesChart",
+          labels,
+          descriptions.map(row => parseNumber(row.SHARES_OUTSTANDING)),
+          "Shares outstanding"
+        );
+
+        createLineChart(
+          "expenseChart",
+          labels,
+          descriptions.map(row => parseNumber(row.TOTAL_EXPENSE_RATIO)),
+          "Total expense ratio"
+        );
+
+        const latestPositionsDate = Math.max(
+          ...positions
+            .map(row => Number(row.DATE))
+            .filter(value => Number.isFinite(value))
+        );
+
+        const latestPositions = positions
+          .filter(row => Number(row.DATE) === latestPositionsDate)
+          .filter(row => row.DESCRIPTION !== "TOTAL NET ASSETS")
+          .sort((a, b) => Math.abs(parseNumber(b.PCT_HOLDINGS) ?? 0) - Math.abs(parseNumber(a.PCT_HOLDINGS) ?? 0));
+
+        const topHoldings = latestPositions.slice(0, 15);
+
+        createBarChart(
+          "holdingsChart",
+          topHoldings.map(row => row.DESCRIPTION),
+          topHoldings.map(row => parseNumber(row.PCT_HOLDINGS)),
+          `Weight on ${formatDate(latestPositionsDate)}`
+        );
+
+        document.getElementById("positionsTable").innerHTML = makeTable(
+          latestPositions,
+          ["DATE", "CUSIP", "TICKER", "DESCRIPTION", "SHARES", "BASE_MV", "PCT_HOLDINGS"],
+          {
+            DATE: formatDate,
+            SHARES: formatNumber,
+            BASE_MV: formatMoney,
+            PCT_HOLDINGS: value => {
+              const num = parseNumber(value);
+              return num === null ? "-" : `${num.toFixed(2)}%`;
+            }
+          }
+        );
+
+        document.getElementById("descriptionsTable").innerHTML = makeTable(
+          descriptions.slice().reverse(),
+          ["DATE", "NAV", "SHARES_OUTSTANDING", "TOTAL_NET_ASSETS", "TOTAL_EXPENSE_RATIO"],
+          {
+            DATE: formatDate,
+            NAV: formatMoney,
+            SHARES_OUTSTANDING: formatNumber,
+            TOTAL_NET_ASSETS: formatMoney,
+            TOTAL_EXPENSE_RATIO: formatPercent
+          }
+        );
+
+      } catch (error) {
+        console.error(error);
+        showError(
+          "Could not load the CSV files. If you opened this file directly from your computer, run a local server with: python -m http.server"
+        );
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>
